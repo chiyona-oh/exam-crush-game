@@ -1,0 +1,1301 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8"/>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="theme-color" content="#111111"/>
+  <title>수능 시험지 뿌시기</title>
+  <style>
+    *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+    html, body {
+      width: 100%;
+      height: 100dvh;
+      overflow: hidden;
+      background: #111;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    canvas {
+      display: block;
+      cursor: crosshair;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    /* 가로 모드 경고 오버레이 (모바일 전용) */
+    #landscape-warn {
+      display: none;
+      position: fixed; inset: 0; z-index: 9999;
+      background: #111;
+      color: #fff;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-family: "Malgun Gothic", sans-serif;
+      font-size: 5vw;
+      text-align: center;
+      gap: 16px;
+    }
+    #landscape-warn .icon { font-size: 14vw; }
+    /* 모바일에서만 가로 경고 표시 (600px 미만) */
+    @media screen and (orientation: landscape) and (max-width: 599px) {
+      #landscape-warn { display: flex; }
+      canvas { display: none; }
+    }
+    /* PC(600px 이상): 중앙 정렬 + 어두운 외곽 배경 */
+    @media (min-width: 600px) {
+      html, body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #0a0a14;
+      }
+      canvas {
+        border-radius: 20px;
+        box-shadow: 0 0 80px rgba(0,0,0,0.85), 0 0 0 1px rgba(255,255,255,0.06);
+      }
+      #landscape-warn { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+<div id="landscape-warn">
+  <div class="icon">📱</div>
+  세로 모드로 플레이해주세요
+</div>
+<canvas id="c"></canvas>
+<script>
+// ════════════════════════════════════════
+// 캔버스 설정 (DPR 지원)
+// ════════════════════════════════════════
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+const dpr    = Math.min(window.devicePixelRatio || 1, 2); // Retina 최대 2x
+let LW = 0, LH = 0; // 논리적 화면 크기 (CSS 픽셀)
+
+// PC 판단: 너비 600px 이상
+function isPC() { return window.innerWidth >= 600; }
+
+function resize() {
+  if (isPC()) {
+    // PC: 390×844 고정 세로 비율로 중앙 표시
+    LW = 390; LH = 844;
+  } else {
+    // 모바일: 전체 화면
+    LW = window.innerWidth;
+    LH = window.innerHeight;
+  }
+  canvas.width  = Math.round(LW * dpr);
+  canvas.height = Math.round(LH * dpr);
+  canvas.style.width  = LW + 'px';
+  canvas.style.height = LH + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // DPR 스케일 적용
+}
+resize();
+window.addEventListener('resize', resize);
+
+// 세로 모드 잠금 시도 (지원하는 브라우저에서만 동작)
+try { screen.orientation.lock('portrait').catch(() => {}); } catch(e) {}
+
+// ════════════════════════════════════════
+// 유틸 — 색상 변환 / 시드 난수
+// ════════════════════════════════════════
+function hexAlpha(hex, a) {
+  const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+// 결정론적 시드 난수 (배경 그리기 — 매 프레임 같은 위치 보장)
+let _rs = 1;
+function initRand(s) { _rs = (Math.abs(s|0) * 374761 + 49297) % 2147483647 || 1; }
+function srand()     { _rs = (_rs * 16807) % 2147483647; return _rs / 2147483647; }
+
+// ════════════════════════════════════════
+// 사운드 엔진 (Web Audio API)
+// ════════════════════════════════════════
+let audioCtx = null;
+let audioReady = false; // 첫 터치 후 true
+
+// AudioContext는 첫 터치/클릭 시 생성 (모바일 정책 대응)
+function initAudio() {
+  if (audioReady) return;
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    audioReady = true;
+  } catch(e) {}
+}
+function ac() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+function playTear() {
+  try {
+    const a = ac(), len = a.sampleRate * 0.11, buf = a.createBuffer(1, len, a.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random()*2-1) * Math.pow(1-i/len, 2.8);
+    const src = a.createBufferSource(); src.buffer = buf;
+    const f = a.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 2500;
+    const g = a.createGain(); g.gain.value = 1.1;
+    src.connect(f); f.connect(g); g.connect(a.destination); src.start();
+  } catch(e) {}
+}
+function playBigTear() {
+  try {
+    const a = ac();
+    for (let layer = 0; layer < 3; layer++) {
+      const len = a.sampleRate*(0.9+layer*0.4), buf = a.createBuffer(1,len,a.sampleRate), d = buf.getChannelData(0);
+      for (let i=0;i<len;i++) { const t=i/len; d[i]=(Math.random()*2-1)*Math.pow(1-t,0.7)*(0.6+0.4*Math.sin(i*0.008*(3-layer))); }
+      const src = a.createBufferSource(); src.buffer = buf;
+      const f = a.createBiquadFilter(); f.type = layer===0?'highpass':'lowpass'; f.frequency.value = layer===0?1200:900;
+      const g = a.createGain(); g.gain.value = 0.9-layer*0.22;
+      src.connect(f); f.connect(g); g.connect(a.destination); src.start(a.currentTime+layer*0.04);
+    }
+  } catch(e) {}
+}
+function playFailSound() {
+  try {
+    const a = ac(), osc = a.createOscillator(), g = a.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(110, a.currentTime);
+    osc.frequency.linearRampToValueAtTime(40, a.currentTime+1.1);
+    g.gain.setValueAtTime(0.38, a.currentTime); g.gain.linearRampToValueAtTime(0, a.currentTime+1.1);
+    osc.connect(g); g.connect(a.destination); osc.start(); osc.stop(a.currentTime+1.1);
+  } catch(e) {}
+}
+
+// ════════════════════════════════════════
+// 배경음악 (BGM) — 8비트 레트로 스타일
+// ════════════════════════════════════════
+let bgmRunning  = false;
+let bgmGain     = null;
+let bgmTickId   = null;
+let bgmNextLoop = 0; // AudioContext 시간 기준 다음 루프 시작점
+
+const _BGM_BPM = 128;
+const _BGM_E   = 60 / (_BGM_BPM * 2); // 8분음표 길이(초) ≈ 0.234s
+
+// 멜로디: [주파수(Hz), 8분음표 단위 길이] — C장조 밝고 경쾌한 선율 (32 eighths ≈ 7.5s)
+const _BGM_MEL = [
+  // bar 1 — 도에서 올라가는 도약감
+  [523.25,1],[587.33,1],[659.25,1],[783.99,1],[880.00,1],[783.99,1],[659.25,1],[587.33,1],
+  // bar 2 — 아치형 선율
+  [523.25,1],[659.25,1],[783.99,1],[880.00,1],[783.99,1],[659.25,1],[587.33,1],[523.25,1],
+  // bar 3 — F 계열 밝은 전환
+  [698.46,1],[783.99,1],[880.00,1],[783.99,1],[698.46,1],[659.25,1],[587.33,2],
+  // bar 4 — 마무리 상승
+  [523.25,1],[587.33,1],[659.25,2],[587.33,1],[659.25,1],[783.99,2],
+];
+// 베이스: I-V-vi-IV / I-V-F-G 코드 진행 (각 4 eighths = 반음표)
+const _BGM_BASS = [
+  [130.81,4],[196.00,4],[220.00,4],[174.61,4],
+  [130.81,4],[196.00,4],[174.61,4],[196.00,4],
+];
+const _BGM_LOOP = 32 * _BGM_E; // 루프 길이 ≈ 7.5초
+
+function _bgmNote(freq, t, durS, type, vol) {
+  if (!bgmGain || !audioCtx || freq === 0) return;
+  try {
+    const osc = audioCtx.createOscillator();
+    const g   = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + durS * 0.88);
+    osc.connect(g); g.connect(bgmGain);
+    osc.start(t); osc.stop(t + durS);
+  } catch(e) {}
+}
+function _bgmSchedule(startT) {
+  let t = startT;
+  for (const [freq, e] of _BGM_MEL) {
+    const d = e * _BGM_E;
+    _bgmNote(freq, t, d * 0.82, 'square', 0.12);
+    t += d;
+  }
+  t = startT;
+  for (const [freq, e] of _BGM_BASS) {
+    const d = e * _BGM_E;
+    _bgmNote(freq, t, d * 0.60, 'triangle', 0.09);
+    t += d;
+  }
+}
+function _bgmTick() {
+  if (!bgmRunning || !audioCtx) return;
+  const now = audioCtx.currentTime;
+  while (bgmNextLoop < now + 0.4) {
+    _bgmSchedule(bgmNextLoop);
+    bgmNextLoop += _BGM_LOOP;
+  }
+  bgmTickId = setTimeout(_bgmTick, 120);
+}
+function startBGM() {
+  if (bgmRunning) return;
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    bgmGain = audioCtx.createGain();
+    bgmGain.gain.value = 0;
+    bgmGain.connect(audioCtx.destination);
+    bgmGain.gain.linearRampToValueAtTime(0.28, audioCtx.currentTime + 1.5);
+    bgmRunning  = true;
+    bgmNextLoop = audioCtx.currentTime + 0.1;
+    _bgmTick();
+  } catch(e) {}
+}
+function stopBGM() {
+  if (!bgmRunning) return;
+  bgmRunning = false;
+  clearTimeout(bgmTickId);
+  if (!bgmGain || !audioCtx) return;
+  try {
+    const g = bgmGain; bgmGain = null;
+    const now = audioCtx.currentTime;
+    g.gain.cancelScheduledValues(now);
+    g.gain.setValueAtTime(g.gain.value, now);
+    g.gain.linearRampToValueAtTime(0, now + 0.8);
+    setTimeout(() => { try { g.disconnect(); } catch(e) {} }, 1000);
+  } catch(e) {}
+}
+
+// ════════════════════════════════════════
+// 레벨 데이터 — 수능 6교시 (실제 시험 순서)
+// ════════════════════════════════════════
+const levelData = [
+  { idx:0, period:'제 1교시', subject:'국어',     goal:100,  timeLimit:15, color:'#8B0000',
+    fwColors:['#ff6b6b','#cc2222','#ff9999','#ffcccc','#ffe0e0','#ffffff'] },
+  { idx:1, period:'제 2교시', subject:'수학',     goal:120,  timeLimit:15, color:'#1C1C5E',
+    fwColors:['#4d96ff','#3355cc','#9999ff','#aabbff','#ddeeff','#ffffff'] },
+  { idx:2, period:'제 3교시', subject:'영어',     goal:140,  timeLimit:15, color:'#003580',
+    fwColors:['#4d96ff','#0066cc','#99bbff','#aaddff','#ddeeff','#ffffff'] },
+  { idx:3, period:'제 4교시', subject:'탐구',     goal:160,  timeLimit:15, color:'#006666',
+    fwColors:['#00cccc','#009999','#66ffff','#aaffff','#ddfff0','#ffffff'] },
+  { idx:4, period:'제 5교시', subject:'한국사',   goal:180,  timeLimit:15, color:'#8B6914',
+    fwColors:['#d4a017','#cc9900','#f0d060','#ffe090','#fff4c0','#fffde7'] },
+  { idx:5, period:'제 6교시', subject:'제2외국어', goal:200,  timeLimit:15, color:'#556B2F',
+    fwColors:['#8bc34a','#6b8e23','#aad060','#ccee88','#eeffcc','#fffff0'] },
+];
+
+let currentLevelIdx = 0;
+function getLv() { return levelData[currentLevelIdx]; }
+
+// ════════════════════════════════════════
+// 저장/불러오기 (localStorage)
+// ════════════════════════════════════════
+const SAVE_KEY = 'suneung_torn_v1';
+function getCleared()   { try { return JSON.parse(localStorage.getItem(SAVE_KEY)||'[]'); } catch { return []; } }
+function markCleared(i) { const c=getCleared(); if(!c.includes(i)){c.push(i);localStorage.setItem(SAVE_KEY,JSON.stringify(c));} }
+function isUnlocked(i)  { return i===0 || getCleared().includes(i-1); }
+
+// ════════════════════════════════════════
+// 게임 상태 변수
+// ════════════════════════════════════════
+// state: 'intro' | 'select' | 'ready' | 'playing' | 'success' | 'fail'
+let state        = 'intro';
+let taps         = 0;
+let timeLeft     = 0;
+let timerAccum   = 0;
+let lastTime     = 0;
+let lastSecond   = 0;
+let timerPulse   = 0;
+let shakeX=0, shakeY=0, shakeFr=0;
+let stampSlam=0, successPhase=0, failPhase=0, fwTimer=0;
+let cracks=[], particles=[];
+let btnPrimary   = {x:0,y:0,w:0,h:0};
+let btnSecondary = {x:0,y:0,w:0,h:0};
+let btnIntro     = {x:0,y:0,w:0,h:0};
+let levelCardBtns = [];
+let currentFwColors = null;
+
+// ════════════════════════════════════════
+// 소개 화면 변수
+// ════════════════════════════════════════
+let introPhase = 0; // 0→1 페이드인 진행도
+const introBits = []; // 배경 떠다니는 시험지 조각
+
+function initIntroBits() {
+  introBits.length = 0;
+  for (let i = 0; i < 18; i++) {
+    const lv = levelData[Math.floor(Math.random() * levelData.length)];
+    introBits.push({
+      x: Math.random() * LW,
+      y: Math.random() * LH,
+      vx: (Math.random() - 0.5) * 0.5,
+      vy: -0.3 - Math.random() * 0.5,
+      rot: Math.random() * Math.PI * 2,
+      rotSpeed: (Math.random() - 0.5) * 0.018,
+      w: 44 + Math.random() * 38,
+      h: 24 + Math.random() * 18,
+      color: lv.color,
+      subject: lv.subject,
+    });
+  }
+}
+initIntroBits();
+
+// ════════════════════════════════════════
+// 성능 자동 조절 (파티클 개수)
+// ════════════════════════════════════════
+let particleLimit = 60;
+let _perfFrameTime = 16;
+
+// ════════════════════════════════════════
+// 시험지 레이아웃 (모바일 최적화)
+// ════════════════════════════════════════
+function getPaper() {
+  // 상단 HUD 10% / 시험지 60% / 진행도 하단 15% / 엄지 안전지대 15%
+  const maxPh = LH * 0.60;
+  const maxPw = LW * 0.92;
+  let pw = maxPw;
+  let ph = pw * 1.41; // A4 비율
+  if (ph > maxPh) { ph = maxPh; pw = ph / 1.41; }
+  const px = (LW - pw) / 2;
+  const py = LH * 0.10;
+  return { x: px, y: py, w: pw, h: ph };
+}
+
+// ════════════════════════════════════════
+// 크랙 생성 (게임플레이 로직 — 수정 없음)
+// ════════════════════════════════════════
+function addCrack(px, py, paper) {
+  const rx=(px-paper.x)/paper.w, ry=(py-paper.y)/paper.h;
+  const lines=[];
+  for (let i=0;i<2+Math.floor(Math.random()*3);i++) {
+    const angle=Math.random()*Math.PI*2, total=0.05+Math.random()*0.09, segs=3+Math.floor(Math.random()*4);
+    const pts=[{x:rx,y:ry}]; let cx=rx,cy=ry;
+    for (let s=0;s<segs;s++) {
+      const a2=angle+(Math.random()-0.5)*1.0, dl=total/segs*(0.6+Math.random()*0.8);
+      cx+=Math.cos(a2)*dl; cy+=Math.sin(a2)*dl; pts.push({x:cx,y:cy});
+    }
+    lines.push(pts);
+  }
+  cracks.push({rx,ry,lines});
+}
+
+// ════════════════════════════════════════
+// 파티클 시스템
+// ════════════════════════════════════════
+class PaperBit {
+  constructor(x,y,big) {
+    const a=Math.random()*Math.PI*2, sp=big?4+Math.random()*11:1.5+Math.random()*4;
+    this.x=x+(Math.random()-0.5)*(big?60:20); this.y=y+(Math.random()-0.5)*(big?60:20);
+    this.vx=Math.cos(a)*sp; this.vy=Math.sin(a)*sp-(big?3.5:1.2);
+    this.g=0.18+Math.random()*0.14;
+    this.w=big?8+Math.random()*22:3+Math.random()*9; this.h=big?4+Math.random()*12:2+Math.random()*5;
+    this.ang=Math.random()*Math.PI*2; this.spin=(Math.random()-0.5)*(big?0.22:0.38);
+    this.life=1; this.decay=big?0.009+Math.random()*0.009:0.02+Math.random()*0.02;
+    const pool=['#fffde7','#fff9c4','#ffffff','#f5f0d0','#fce4ec','#e3f2fd'];
+    this.color=pool[Math.floor(Math.random()*pool.length)];
+  }
+  update() { this.x+=this.vx;this.y+=this.vy;this.vy+=this.g;this.vx*=0.975;this.ang+=this.spin;this.life-=this.decay; }
+  draw() {
+    if(this.life<=0)return;
+    ctx.save();ctx.translate(this.x,this.y);ctx.rotate(this.ang);
+    ctx.globalAlpha=Math.max(0,this.life);ctx.fillStyle=this.color;
+    ctx.fillRect(-this.w/2,-this.h/2,this.w,this.h);ctx.restore();
+  }
+  get dead(){return this.life<=0;}
+}
+
+// 폭죽 파티클 — 과목별 색상
+class Spark {
+  constructor(x,y) {
+    const a=Math.random()*Math.PI*2, sp=3+Math.random()*10;
+    this.x=x; this.y=y; this.vx=Math.cos(a)*sp; this.vy=Math.sin(a)*sp-2.5;
+    this.g=0.13; this.r=2+Math.random()*4; this.life=1; this.decay=0.012+Math.random()*0.013;
+    const pool = currentFwColors || ['#ff6b6b','#ffd93d','#6bcb77','#4d96ff','#ff6fc8','#c77dff','#ffffff'];
+    this.color=pool[Math.floor(Math.random()*pool.length)];
+  }
+  update() { this.x+=this.vx;this.y+=this.vy;this.vy+=this.g;this.vx*=0.97;this.life-=this.decay; }
+  draw() {
+    if(this.life<=0)return;
+    ctx.save();ctx.globalAlpha=Math.max(0,this.life);ctx.fillStyle=this.color;
+    ctx.beginPath();ctx.arc(this.x,this.y,this.r,0,Math.PI*2);ctx.fill();ctx.restore();
+  }
+  get dead(){return this.life<=0;}
+}
+
+function spawnFirework() {
+  const x=LW*0.08+Math.random()*LW*0.84;
+  const y=LH*0.04+Math.random()*LH*0.52;
+  for(let i=0;i<44;i++) particles.push(new Spark(x,y));
+}
+function spawnSuccessExplosion() {
+  const p=getPaper(),cx=p.x+p.w/2,cy=p.y+p.h/2;
+  const count = Math.min(90, particleLimit);
+  for(let i=0;i<count;i++) particles.push(new PaperBit(cx+(Math.random()-0.5)*p.w,cy+(Math.random()-0.5)*p.h,true));
+}
+
+// ════════════════════════════════════════
+// 유틸 — 둥근 사각형 / 버튼
+// ════════════════════════════════════════
+function roundRect(x,y,w,h,r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath();
+}
+function drawBtn(btn,label,c1,c2,border,fs) {
+  ctx.fillStyle='rgba(0,0,0,0.4)'; roundRect(btn.x+3,btn.y+3,btn.w,btn.h,12); ctx.fill();
+  const g=ctx.createLinearGradient(btn.x,btn.y,btn.x,btn.y+btn.h);
+  g.addColorStop(0,c1); g.addColorStop(1,c2); ctx.fillStyle=g;
+  roundRect(btn.x,btn.y,btn.w,btn.h,12); ctx.fill();
+  ctx.strokeStyle=border; ctx.lineWidth=2; roundRect(btn.x,btn.y,btn.w,btn.h,12); ctx.stroke();
+  ctx.fillStyle='#fff';
+  ctx.font=`bold ${fs || Math.max(16, LW*0.045)}px "Malgun Gothic",sans-serif`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(label,btn.x+btn.w/2,btn.y+btn.h/2);
+}
+function hitBtn(px,py,btn) { return btn.w>0&&px>=btn.x&&px<=btn.x+btn.w&&py>=btn.y&&py<=btn.y+btn.h; }
+
+// ════════════════════════════════════════
+// 배경
+// ════════════════════════════════════════
+function drawBackground() {
+  const g=ctx.createRadialGradient(LW/2,LH/2,0,LW/2,LH/2,Math.max(LW,LH)*0.75);
+  g.addColorStop(0,'#1c1c2e'); g.addColorStop(1,'#0a0a14');
+  ctx.fillStyle=g; ctx.fillRect(0,0,LW,LH);
+}
+
+// ════════════════════════════════════════
+// 과목별 시험지 배경 그리기 함수들
+// (seeded random — 매 프레임 동일한 위치 보장)
+// ════════════════════════════════════════
+
+// 국어 — 한글 자모/음절 산포 + 세로쓰기
+function drawBgKorean(p, ctop) {
+  initRand(101);
+  const cbot=p.h/2-8, ch=cbot-ctop;
+  const chars='ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅎ가나다라마바사아자하글문자어휘의를이에'.split('');
+  ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillStyle='#1a0000';
+  for(let i=0;i<26;i++){
+    const c2=chars[Math.floor(srand()*chars.length)], fs=10+srand()*14;
+    const x=-p.w*0.44+srand()*p.w*0.88, y=ctop+4+srand()*(ch-8);
+    ctx.globalAlpha=0.09+srand()*0.07;
+    ctx.font=`${fs}px "Batang",serif`; ctx.fillText(c2,x,y);
+  }
+  const vTexts=['문학과독서이해','시조와현대시'];
+  const vFs=Math.max(10,p.w*0.026);
+  ctx.font=`${vFs}px "Batang",serif`; ctx.fillStyle='#1a0000';
+  for(let c=0;c<2;c++){
+    const tx=-p.w*0.36+c*p.w*0.65, ty=ctop+12;
+    const text=vTexts[c];
+    for(let j=0;j<Math.min(text.length,7);j++){
+      ctx.globalAlpha=0.09; ctx.fillText(text[j],tx,ty+j*(vFs+4));
+    }
+  }
+  ctx.globalAlpha=1;
+}
+
+// 영어 — 알파벳 산포 + 영단어
+function drawBgEnglish(p, ctop) {
+  initRand(102);
+  const cbot=p.h/2-8, ch=cbot-ctop;
+  const upper='ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+  const lower='abcdefghijklmnopqrstuvwxyz'.split('');
+  const words=['the','and','for','you','are','have','that','with','they','from'];
+  ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillStyle='#001830';
+  for(let i=0;i<36;i++){
+    const pool=srand()>0.5?upper:lower;
+    const c2=pool[Math.floor(srand()*pool.length)], fs=11+srand()*12;
+    const x=-p.w*0.44+srand()*p.w*0.88, y=ctop+4+srand()*(ch-8);
+    ctx.globalAlpha=0.08+srand()*0.07;
+    ctx.font=`${fs}px "Times New Roman",serif`; ctx.fillText(c2,x,y);
+  }
+  for(let i=0;i<7;i++){
+    const w=words[Math.floor(srand()*words.length)], fs=9+srand()*8;
+    const x=-p.w*0.42+srand()*p.w*0.84, y=ctop+4+srand()*(ch-8);
+    ctx.globalAlpha=0.08; ctx.font=`${fs}px "Times New Roman",serif`; ctx.fillText(w,x,y);
+  }
+  ctx.globalAlpha=1;
+}
+
+// 한국사 — 타임라인 + 한자 + 시대구분선
+function drawBgHistory(p, ctop) {
+  initRand(103);
+  const cbot=p.h/2-8, ch=cbot-ctop;
+  const midY=ctop+ch*0.45;
+  ctx.strokeStyle='rgba(80,50,8,0.18)'; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.moveTo(-p.w*0.42,midY); ctx.lineTo(p.w*0.42,midY); ctx.stroke();
+  const eras=[{t:'삼국',x:-0.34},{t:'고려',x:-0.16},{t:'조선',x:0.04},{t:'근대',x:0.22},{t:'현대',x:0.36}];
+  const fs=Math.max(9,p.w*0.026);
+  ctx.font=`${fs}px "Malgun Gothic",sans-serif`; ctx.textAlign='center'; ctx.textBaseline='middle';
+  for(let i=0;i<eras.length;i++){
+    const ex=eras[i].x*p.w;
+    ctx.globalAlpha=0.20; ctx.fillStyle='#5a3000';
+    ctx.beginPath(); ctx.arc(ex,midY,3.5,0,Math.PI*2); ctx.fill();
+    ctx.globalAlpha=0.10; ctx.strokeStyle='#5a3000'; ctx.lineWidth=0.7;
+    ctx.beginPath(); ctx.moveTo(ex,ctop+4); ctx.lineTo(ex,cbot-4); ctx.stroke();
+    ctx.globalAlpha=0.15; ctx.fillStyle='#3a1e00';
+    ctx.fillText(eras[i].t, ex, midY+(i%2===0?-14:+14));
+  }
+  const hanja='朝鮮高麗古代史近現代三國'.split('');
+  ctx.font=`${Math.max(12,p.w*0.034)}px serif`;
+  for(let i=0;i<9;i++){
+    const c2=hanja[Math.floor(srand()*hanja.length)];
+    const x=-p.w*0.44+srand()*p.w*0.88, y=ctop+4+srand()*(cbot-ctop-8);
+    ctx.globalAlpha=0.09+srand()*0.06; ctx.fillStyle='#3a1e00';
+    ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(c2,x,y);
+  }
+  ctx.globalAlpha=1;
+}
+
+// 사회탐구 — 막대그래프 + 꺾은선 + 파이차트
+function drawBgSocial(p, ctop) {
+  initRand(104);
+  const cbot=p.h/2-8, ch=cbot-ctop;
+  ctx.strokeStyle='rgba(0,70,70,0.16)'; ctx.fillStyle='rgba(0,100,100,0.11)';
+  const barW=p.w*0.038, barGap=p.w*0.016, bBaseX=-p.w*0.38, bBaseY=ctop+ch*0.50;
+  ctx.lineWidth=0.8;
+  ctx.beginPath(); ctx.moveTo(bBaseX-3,ctop+ch*0.14); ctx.lineTo(bBaseX-3,bBaseY+2); ctx.lineTo(bBaseX+5*(barW+barGap)+3,bBaseY+2); ctx.stroke();
+  for(let b=0;b<5;b++){
+    const bh=ch*0.28*(0.3+srand()*0.7), bx=bBaseX+b*(barW+barGap);
+    ctx.globalAlpha=0.13; ctx.fillRect(bx,bBaseY-bh,barW,bh);
+    ctx.globalAlpha=0.15; ctx.strokeRect(bx,bBaseY-bh,barW,bh);
+  }
+  const lgSX=p.w*0.08,lgEX=p.w*0.42, lgBY=ctop+ch*0.52, lgTY=ctop+ch*0.18, lgN=6;
+  ctx.globalAlpha=0.15; ctx.lineWidth=0.8;
+  ctx.beginPath(); ctx.moveTo(lgSX-3,lgTY); ctx.lineTo(lgSX-3,lgBY+2); ctx.lineTo(lgEX+3,lgBY+2); ctx.stroke();
+  ctx.beginPath();
+  for(let pt=0;pt<lgN;pt++){
+    const lx=lgSX+pt*(lgEX-lgSX)/(lgN-1), ly=lgBY-(0.15+srand()*0.72)*(lgBY-lgTY);
+    if(pt===0)ctx.moveTo(lx,ly); else ctx.lineTo(lx,ly);
+  }
+  ctx.strokeStyle='rgba(0,100,100,0.18)'; ctx.lineWidth=1.2; ctx.globalAlpha=0.18; ctx.stroke();
+  const pieX=-p.w*0.08, pieY=ctop+ch*0.76, pieR=Math.max(18,p.w*0.072);
+  const slices=[0.33,0.27,0.22,0.18]; let sa=-Math.PI/2;
+  for(const sl of slices){
+    const ea=sa+sl*Math.PI*2;
+    ctx.beginPath(); ctx.moveTo(pieX,pieY); ctx.arc(pieX,pieY,pieR,sa,ea); ctx.closePath();
+    ctx.strokeStyle='rgba(0,80,80,0.20)'; ctx.lineWidth=0.8; ctx.globalAlpha=0.13; ctx.stroke();
+    sa=ea;
+  }
+  ctx.globalAlpha=1;
+}
+
+// 과학탐구 — 메스실린더 + 플라스크 + 세포 + 원소기호
+function drawBgScience(p, ctop) {
+  initRand(105);
+  const cbot=p.h/2-8, ch=cbot-ctop;
+  ctx.strokeStyle='rgba(55,0,90,0.17)'; ctx.lineWidth=0.9;
+  const cylX=-p.w*0.34, cylW=p.w*0.075, cylH=ch*0.44, cylY=ctop+ch*0.10;
+  ctx.globalAlpha=0.15;
+  ctx.strokeRect(cylX-cylW/2,cylY,cylW,cylH);
+  ctx.beginPath(); ctx.moveTo(cylX-cylW/2,cylY); ctx.lineTo(cylX-cylW*0.28,cylY-cylH*0.11); ctx.lineTo(cylX+cylW*0.28,cylY-cylH*0.11); ctx.lineTo(cylX+cylW/2,cylY); ctx.stroke();
+  for(let t=1;t<=4;t++){ ctx.beginPath(); ctx.moveTo(cylX+cylW/2,cylY+cylH*t/5); ctx.lineTo(cylX+cylW/2+5,cylY+cylH*t/5); ctx.stroke(); }
+  const flX=p.w*0.30, flBY=ctop+ch*0.60, flR=Math.max(18,p.w*0.072);
+  ctx.beginPath(); ctx.arc(flX,flBY,flR,0,Math.PI*2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(flX-flR*0.22,flBY-flR); ctx.lineTo(flX-flR*0.16,flBY-flR*1.5); ctx.moveTo(flX+flR*0.22,flBY-flR); ctx.lineTo(flX+flR*0.16,flBY-flR*1.5); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(flX-flR*0.22,flBY-flR*1.5); ctx.lineTo(flX+flR*0.22,flBY-flR*1.5); ctx.stroke();
+  const cellX=-p.w*0.04, cellY=ctop+ch*0.32, cellR=Math.max(20,p.w*0.082);
+  ctx.globalAlpha=0.14;
+  ctx.beginPath(); ctx.arc(cellX,cellY,cellR,0,Math.PI*2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(cellX,cellY,cellR*0.34,0,Math.PI*2); ctx.stroke();
+  const elems=['H','O','C','N','Fe','Na','Ca','Mg','K','Cl','He','Ne'];
+  ctx.fillStyle='#280050'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  for(let i=0;i<10;i++){
+    const el=elems[Math.floor(srand()*elems.length)], fs=9+srand()*9;
+    const x=-p.w*0.44+srand()*p.w*0.88, y=ctop+4+srand()*(cbot-ctop-8);
+    ctx.globalAlpha=0.10+srand()*0.06; ctx.font=`bold ${fs}px "Courier New",monospace`; ctx.fillText(el,x,y);
+  }
+  ctx.globalAlpha=0.12; ctx.font=`${Math.max(9,p.w*0.024)}px "Courier New",monospace`;
+  ctx.fillText('A + B → C + D', p.w*0.10, ctop+ch*0.88);
+  ctx.globalAlpha=1;
+}
+
+// 제2외국어 — 이국적 곡선 기호
+function drawBgForeign(p, ctop) {
+  initRand(106);
+  const cbot=p.h/2-8, ch=cbot-ctop;
+  ctx.strokeStyle='rgba(40,55,15,0.16)'; ctx.fillStyle='rgba(40,55,15,0.13)';
+  for(let line=0;line<5;line++){
+    const lY=ctop+ch*(0.10+line*0.18);
+    let cx2=p.w*0.42;
+    for(let w=0;w<4+Math.floor(srand()*3);w++){
+      const wW=p.w*(0.055+srand()*0.075), wH=Math.max(8,p.h*0.024);
+      ctx.globalAlpha=0.10+srand()*0.07; ctx.lineWidth=0.9;
+      ctx.beginPath(); ctx.moveTo(cx2,lY);
+      ctx.bezierCurveTo(cx2-wW*0.33,lY+(srand()-0.5)*wH*2.2, cx2-wW*0.67,lY+(srand()-0.5)*wH*2.2, cx2-wW,lY);
+      ctx.stroke();
+      if(srand()>0.45){ ctx.beginPath(); ctx.arc(cx2-wW/2+srand()*wW*0.3,lY-wH*(0.5+srand()*0.6),1.6,0,Math.PI*2); ctx.fill(); }
+      cx2-=wW+p.w*0.012; if(cx2<-p.w*0.40)break;
+    }
+  }
+  for(let i=0;i<8;i++){
+    const sx=-p.w*0.44+srand()*p.w*0.88, sy=ctop+4+srand()*(cbot-ctop-8), r=p.w*(0.014+srand()*0.022);
+    ctx.globalAlpha=0.09; ctx.lineWidth=0.8;
+    ctx.beginPath(); ctx.arc(sx,sy,r,0,Math.PI*(1.2+srand()*0.8)); ctx.stroke();
+    ctx.beginPath(); ctx.arc(sx+r,sy,1.6,0,Math.PI*2); ctx.fill();
+  }
+  ctx.globalAlpha=1;
+}
+
+// 수학 — 격자 + 좌표축 + 포물선 + 도형 + 수식기호
+function drawBgMath(p, ctop) {
+  initRand(107);
+  const cbot=p.h/2-8, ch=cbot-ctop;
+  const gGap=Math.max(14,p.w*0.048);
+  ctx.strokeStyle='rgba(15,15,70,0.07)'; ctx.lineWidth=0.5;
+  for(let gx=-p.w/2+gGap;gx<p.w/2;gx+=gGap){ ctx.beginPath();ctx.moveTo(gx,ctop);ctx.lineTo(gx,cbot);ctx.stroke(); }
+  for(let gy=ctop+gGap;gy<cbot;gy+=gGap){ ctx.beginPath();ctx.moveTo(-p.w/2+6,gy);ctx.lineTo(p.w/2-6,gy);ctx.stroke(); }
+  const axCX=-p.w*0.04, axCY=ctop+ch*0.52, axL=Math.max(32,p.w*0.155);
+  ctx.strokeStyle='rgba(15,15,70,0.18)'; ctx.lineWidth=0.9; ctx.globalAlpha=0.18;
+  ctx.beginPath();ctx.moveTo(axCX-axL,axCY);ctx.lineTo(axCX+axL+6,axCY);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(axCX,axCY+axL*0.7);ctx.lineTo(axCX,axCY-axL-6);ctx.stroke();
+  ctx.fillStyle='rgba(15,15,70,0.18)';
+  ctx.beginPath();ctx.moveTo(axCX+axL+6,axCY);ctx.lineTo(axCX+axL,axCY-3);ctx.lineTo(axCX+axL,axCY+3);ctx.fill();
+  ctx.beginPath();ctx.moveTo(axCX,axCY-axL-6);ctx.lineTo(axCX-3,axCY-axL);ctx.lineTo(axCX+3,axCY-axL);ctx.fill();
+  ctx.strokeStyle='rgba(0,0,140,0.14)'; ctx.lineWidth=1.1; ctx.beginPath(); let fp=true;
+  for(let xi=-axL;xi<=axL;xi+=1.5){
+    const xn=xi/(axL/2), ypx=axCX+xi, ypy=axCY-xn*xn*axL*0.5;
+    if(fp){ctx.moveTo(ypx,ypy);fp=false;}else ctx.lineTo(ypx,ypy);
+  }
+  ctx.stroke();
+  ctx.strokeStyle='rgba(0,0,110,0.12)'; ctx.lineWidth=0.9;
+  ctx.beginPath();ctx.moveTo(axCX-axL,axCY+axL*0.38);ctx.lineTo(axCX+axL,axCY-axL*0.38);ctx.stroke();
+  const tX=-p.w*0.34, tY=ctop+ch*0.24, tS=Math.max(18,p.w*0.075);
+  ctx.strokeStyle='rgba(15,15,70,0.15)'; ctx.lineWidth=0.9;
+  ctx.beginPath();ctx.moveTo(tX,tY-tS);ctx.lineTo(tX+tS,tY+tS*0.5);ctx.lineTo(tX-tS,tY+tS*0.5);ctx.closePath();ctx.stroke();
+  const cX=p.w*0.33, cY=ctop+ch*0.24, cR=Math.max(16,p.w*0.063);
+  ctx.beginPath();ctx.arc(cX,cY,cR,0,Math.PI*2);ctx.stroke();
+  const syms=['x²','∫','√','π','Σ','lim','sin','cos','∞','∂','≤','≥'];
+  ctx.fillStyle='#0f0f44'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  for(let i=0;i<10;i++){
+    const sym=syms[Math.floor(srand()*syms.length)], fs=9+srand()*10;
+    const x=-p.w*0.44+srand()*p.w*0.88, y=ctop+4+srand()*(cbot-ctop-8);
+    ctx.globalAlpha=0.09+srand()*0.07; ctx.font=`${fs}px "Times New Roman",serif`; ctx.fillText(sym,x,y);
+  }
+  ctx.globalAlpha=1;
+}
+
+// 과목 → 배경 함수 디스패치
+function drawSubjectBg(p, ctop) {
+  switch(getLv().subject){
+    case '국어':      drawBgKorean(p,ctop);  break;
+    case '수학':      drawBgMath(p,ctop);    break;
+    case '영어':      drawBgEnglish(p,ctop); break;
+    case '탐구':      drawBgSocial(p,ctop);  break; // 사회+과학 통합 탐구
+    case '한국사':    drawBgHistory(p,ctop); break;
+    case '제2외국어': drawBgForeign(p,ctop); break;
+  }
+}
+
+// ════════════════════════════════════════
+// 시험지 그리기 — 실제 수능 표지 스타일
+// ════════════════════════════════════════
+
+// 과목명 → 수능 스타일 글자 사이 띄기
+function fmtSubjectLabel(s) {
+  const map = {
+    '국어':    '국 어   영 역',
+    '수학':    '수 학   영 역',
+    '영어':    '영 어   영 역',
+    '탐구':    '탐 구   영 역',
+    '한국사':  '한 국 사',
+    '제2외국어':'제 2 외 국 어',
+  };
+  return map[s] || s;
+}
+
+function drawPaper(p, progress) {
+  const lv = getLv();
+  ctx.save();
+  ctx.translate(p.x+p.w/2+shakeX, p.y+p.h/2+shakeY);
+  const y = progress;
+  const W = p.w, H = p.h;
+  const pad = W * 0.046;
+  const innerW = W - pad*2;
+
+  // ─── 종이 배경 (흰색 → 진행도에 따라 노랗게) ───
+  ctx.shadowColor='rgba(0,0,0,0.45)'; ctx.shadowBlur=22; ctx.shadowOffsetX=5; ctx.shadowOffsetY=8;
+  ctx.fillStyle = `rgb(255,${Math.round(255-y*60)},${Math.round(255-y*140)})`;
+  ctx.fillRect(-W/2,-H/2,W,H);
+  ctx.shadowBlur=0; ctx.shadowOffsetX=0; ctx.shadowOffsetY=0;
+
+  // 외곽 테두리 — 얇은 검정 실선
+  ctx.strokeStyle = `rgba(12,12,12,${0.8+y*0.2})`; ctx.lineWidth = 1.0;
+  ctx.strokeRect(-W/2,-H/2,W,H);
+
+  // 잉크 색상
+  const inkA  = 0.88 - y*0.10;
+  const ink   = `rgba(12,12,12,${inkA})`;
+  const inkDim= `rgba(12,12,12,${inkA*0.55})`;
+
+  // 폰트 크기
+  const fsS = Math.max(6.5, W*0.026);  // 극소 (안내문)
+  const fsM = Math.max(8.0, W*0.032);  // 소 (교시, 홀수형)
+  const fsT = Math.max(10,  W*0.040);  // 중 (타이틀)
+  const fsX = Math.max(13,  W*0.056);  // 대 (과목명)
+
+  ctx.textBaseline = 'middle';
+
+  // Y 커서 (종이 중심 기준)
+  let cy = -H/2 + W*0.040;
+
+  // ── 1. 교시 박스 (좌상단, 둥근 테두리) ──
+  const phH = Math.max(14, W*0.052);
+  const phW = Math.max(38, W*0.250);
+  const phX = -W/2 + pad;
+  ctx.strokeStyle = ink; ctx.lineWidth = 0.85;
+  roundRect(phX, cy, phW, phH, phH/2); ctx.stroke();
+  ctx.font = `bold ${fsM}px serif`;
+  ctx.textAlign = 'center'; ctx.fillStyle = ink;
+  ctx.fillText(lv.period, phX+phW/2, cy+phH/2);
+  cy += phH + W*0.026;
+
+  // ── 2. 대학수학능력시험 ──
+  ctx.font = `${fsT}px serif`;
+  ctx.textAlign = 'center'; ctx.fillStyle = ink;
+  ctx.fillText('대학수학능력시험', 0, cy+fsT/2);
+  cy += fsT + W*0.015;
+
+  // ── 3. 과목명 + 홀수형 박스 ──
+  const oddH = Math.max(12, W*0.042);
+  const oddW = Math.max(28, W*0.148);
+  const oddX = W/2 - pad - oddW;
+  const oddY = cy + (fsX - oddH) / 2;
+  ctx.strokeStyle = ink; ctx.lineWidth = 0.7;
+  ctx.strokeRect(oddX, oddY, oddW, oddH);
+  ctx.font = `${fsS}px serif`;
+  ctx.textAlign = 'center'; ctx.fillStyle = ink;
+  ctx.fillText('홀수형', oddX+oddW/2, oddY+oddH/2);
+  ctx.font = `bold ${fsX}px serif`;
+  ctx.textAlign = 'center'; ctx.fillStyle = ink;
+  ctx.fillText(fmtSubjectLabel(lv.subject), 0, cy+fsX/2);
+  cy += fsX + W*0.016;
+
+  // 얇은 구분선
+  ctx.strokeStyle = ink; ctx.lineWidth = 0.6;
+  ctx.beginPath(); ctx.moveTo(-W/2+pad, cy); ctx.lineTo(W/2-pad, cy); ctx.stroke();
+  cy += W*0.018;
+
+  // ── 4. 성명 / 수험번호 란 ──
+  const fmH = Math.max(13, W*0.054);
+  ctx.font = `${fsS}px serif`;
+  ctx.textAlign = 'left'; ctx.fillStyle = ink;
+  ctx.fillText('성  명', -W/2+pad, cy+fmH/2);
+  const nmX = -W/2+pad+W*0.098, nmW = W*0.210;
+  ctx.strokeStyle = ink; ctx.lineWidth = 0.65;
+  ctx.strokeRect(nmX, cy, nmW, fmH);
+  ctx.fillText('수험번호', nmX+nmW+W*0.016, cy+fmH/2);
+  // 수험번호 칸 (3칸 - 4칸)
+  const nb=Math.max(10, W*0.046), ng=W*0.007;
+  const nx0 = nmX+nmW+W*0.148;
+  for(let n=0;n<3;n++) ctx.strokeRect(nx0+n*(nb+ng), cy, nb, fmH);
+  const dX = nx0+3*(nb+ng)+ng*1.5;
+  ctx.fillText('-', dX, cy+fmH/2);
+  for(let n=0;n<4;n++) ctx.strokeRect(dX+W*0.020+n*(nb+ng), cy, nb, fmH);
+  cy += fmH + W*0.016;
+
+  // ── 5. 안내사항 박스 ──
+  const nls = [
+    '○ 문제지의 해당란에 성명과 수험 번호를 정확히 쓰시오.',
+    '○ 답안지의 필적 확인란에 다음의 문구를 정자로 기재하시오.',
+    '※ 시험이 시작되기 전까지 표지를 넘기지 마시오.',
+  ];
+  const nlH = Math.max(9, W*0.037);
+  const nPad = W*0.015;
+  const noticeH = nls.length*nlH + nPad*2;
+  ctx.strokeStyle = ink; ctx.lineWidth = 0.65;
+  ctx.strokeRect(-W/2+pad, cy, innerW, noticeH);
+  ctx.font = `${fsS}px serif`;
+  ctx.textAlign = 'left'; ctx.fillStyle = inkDim;
+  for(let i=0;i<nls.length;i++){
+    ctx.fillText(nls[i], -W/2+pad+nPad, cy+nPad+nlH*(i+0.5));
+  }
+  cy += noticeH + W*0.016;
+
+  // ── 6. 필적확인 박스 (굵은 테두리) ──
+  const penMap = {
+    '국어':    '많고 많은 사람 중에 그대 한 사람',
+    '수학':    '하늘 향해 우뚝 솟은 젊음으로',
+    '영어':    '나는 오늘도 새로운 길을 걷는다',
+    '탐구':    '넓고 푸른 하늘 아래 당당히 서라',
+    '한국사':  '이 땅의 주인공은 바로 나 자신',
+    '제2외국어':'꿈을 향해 힘차게 나아가는 청춘',
+  };
+  const penH = Math.max(20, W*0.080);
+  ctx.strokeStyle = ink; ctx.lineWidth = 1.8;
+  ctx.strokeRect(-W/2+pad, cy, innerW, penH);
+  ctx.font = `${Math.max(8, W*0.032)}px serif`;
+  ctx.textAlign = 'center'; ctx.fillStyle = ink;
+  ctx.fillText(penMap[lv.subject]||'', 0, cy+penH/2);
+  cy += penH + W*0.014;
+
+  // ── 7. 과목별 배경 (content 영역, 불투명도 ~0.07) ──
+  const contentTop = cy;
+  drawSubjectBg(p, contentTop);
+  // 흰색 오버레이로 배경 요소 opacity 약 0.07 수준으로 감소
+  ctx.fillStyle = 'rgba(255,255,255,0.52)';
+  ctx.fillRect(-W/2, contentTop, W, H/2 - contentTop);
+
+  // ── 8. 하단 경고 박스 (굵은 테두리) ──
+  const warnH = Math.max(15, W*0.052);
+  const warnY = H/2 - pad - warnH;
+  ctx.strokeStyle = ink; ctx.lineWidth = 1.5;
+  ctx.strokeRect(-W/2+pad, warnY, innerW, warnH);
+  ctx.font = `bold ${fsS}px serif`;
+  ctx.textAlign = 'center'; ctx.fillStyle = ink;
+  ctx.fillText('※ 시험이 시작되기 전까지 표지를 넘기지 마시오.', 0, warnY+warnH/2);
+
+  ctx.restore();
+}
+
+// ════════════════════════════════════════
+// 크랙 그리기 (게임플레이 로직 — 수정 없음)
+// ════════════════════════════════════════
+function drawCracks(p) {
+  if(!cracks.length)return;
+  ctx.save(); ctx.translate(p.x+p.w/2+shakeX,p.y+p.h/2+shakeY);
+  for(const crack of cracks)
+    for(const line of crack.lines){
+      if(line.length<2)continue;
+      ctx.strokeStyle=`rgba(17,17,17,${0.82+Math.random()*0.18})`; ctx.lineWidth=0.9+Math.random()*0.6;
+      ctx.beginPath();ctx.moveTo((line[0].x-0.5)*p.w,(line[0].y-0.5)*p.h);
+      for(let k=1;k<line.length;k++)ctx.lineTo((line[k].x-0.5)*p.w,(line[k].y-0.5)*p.h);
+      ctx.stroke();
+    }
+  ctx.restore();
+}
+
+// ════════════════════════════════════════
+// 진행도 바 (게임플레이 로직 — 수정 없음)
+// ════════════════════════════════════════
+function drawProgressBar(progress) {
+  const lv=getLv();
+  const barH=Math.max(44, LH*0.058);    // 최소 44px (손가락 영역)
+  const barW=Math.min(LW*0.88, 480);
+  const barX=(LW-barW)/2;
+  const barY=LH*0.73;                    // 하단 15% 영역
+  const r=barH/2;
+  ctx.fillStyle='rgba(0,0,0,0.55)'; roundRect(barX,barY,barW,barH,r); ctx.fill();
+  if(progress>0){
+    const hue=progress*120;
+    ctx.fillStyle=`hsl(${hue},90%,46%)`; roundRect(barX,barY,Math.max(r*2,barW*progress),barH,r); ctx.fill();
+  }
+  ctx.strokeStyle='rgba(255,255,255,0.18)'; ctx.lineWidth=1.8; roundRect(barX,barY,barW,barH,r); ctx.stroke();
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  const fs=Math.max(14, LW*0.040); // 4vw
+  ctx.font=`bold ${fs}px "Malgun Gothic",sans-serif`;
+  ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillText(`${taps} / ${lv.goal}`,LW/2+1,barY+barH/2+1);
+  ctx.fillStyle='#fff'; ctx.fillText(`${taps} / ${lv.goal}`,LW/2,barY+barH/2);
+}
+
+// ════════════════════════════════════════
+// 타이머 (게임플레이 로직 — 수정 없음)
+// ════════════════════════════════════════
+function drawTimer() {
+  const urgent=timeLeft<=10&&state==='playing', cx=LW/2;
+  ctx.save(); ctx.translate(cx, LH*0.05); // 상단 HUD 영역 중앙
+  if(urgent&&timerPulse>0){const s=1+timerPulse*0.22;ctx.scale(s,s);}
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  const timerFs=Math.max(32, LW*0.05); // 5vw
+  ctx.font=`bold ${timerFs}px "Malgun Gothic",sans-serif`;
+  if(urgent){ctx.fillStyle=`rgba(255,55,55,${0.78+Math.sin(Date.now()*0.014)*0.18})`;ctx.shadowColor='#ff0000';ctx.shadowBlur=20;}
+  else{ctx.fillStyle='rgba(220,220,190,0.88)';ctx.shadowBlur=0;}
+  ctx.fillText(`${Math.ceil(timeLeft)}`,0,0); ctx.shadowBlur=0;
+  ctx.font=`${Math.max(11, LW*0.023)}px "Malgun Gothic",sans-serif`;
+  ctx.fillStyle='rgba(190,190,160,0.48)'; ctx.fillText('초',0,Math.max(20, LW*0.038));
+  ctx.restore();
+}
+
+// ════════════════════════════════════════
+// 소개 화면
+// ════════════════════════════════════════
+function drawIntroScreen(dt) {
+  introPhase = Math.min(1, introPhase + dt * 0.0018); // ~0.55초 페이드인
+  const cx = LW / 2;
+  const a  = introPhase;
+
+  // 떠다니는 시험지 조각 (배경)
+  for (const b of introBits) {
+    b.x += b.vx; b.y += b.vy; b.rot += b.rotSpeed;
+    if (b.y < -70) { b.y = LH + 20; b.x = Math.random() * LW; }
+    if (b.x < -70) b.x = LW + 60;
+    if (b.x > LW + 70) b.x = -60;
+    ctx.save();
+    ctx.translate(b.x, b.y); ctx.rotate(b.rot);
+    ctx.globalAlpha = 0.15;
+    ctx.fillStyle = '#fffde7';
+    ctx.fillRect(-b.w/2, -b.h/2, b.w, b.h);
+    ctx.strokeStyle = hexAlpha(b.color, 0.55);
+    ctx.lineWidth = 1.2;
+    ctx.strokeRect(-b.w/2, -b.h/2, b.w, b.h);
+    ctx.globalAlpha = 0.28;
+    ctx.fillStyle = b.color;
+    ctx.font = `bold ${Math.max(9, b.w * 0.22)}px "Malgun Gothic",sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(b.subject, 0, 0);
+    ctx.restore();
+  }
+
+  // 페이드인: 아래서 위로 살며시 등장
+  const offY = (1 - a) * 28;
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+  // 제목
+  const titleFs = Math.max(20, LW * 0.068);
+  ctx.font = `bold ${titleFs}px "Malgun Gothic",sans-serif`;
+  ctx.fillStyle = '#ffd700';
+  ctx.shadowColor = '#ffec6e'; ctx.shadowBlur = 22;
+  ctx.fillText('수능 시험지 뿌시기 💢', cx, LH * 0.13 + offY);
+  ctx.shadowBlur = 0;
+
+  // 구분선
+  ctx.strokeStyle = 'rgba(255,215,0,0.25)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(cx - LW*0.3, LH*0.20 + offY); ctx.lineTo(cx + LW*0.3, LH*0.20 + offY); ctx.stroke();
+
+  // 메인 문구
+  const mainLines = ['수능 준비로 고생하는', '모든 수험생 여러분께', '이 게임을 바칩니다 🎓'];
+  const mainFs = Math.max(13, LW * 0.040);
+  ctx.font = `${mainFs}px "Malgun Gothic",sans-serif`;
+  ctx.fillStyle = 'rgba(215,230,215,0.92)';
+  const mainTop = LH * 0.26 + offY;
+  for (let i = 0; i < mainLines.length; i++) {
+    ctx.fillText(mainLines[i], cx, mainTop + i * (mainFs + 9));
+  }
+
+  // 설명 문구
+  const descLines = ['방법은 단 하나.', '시험지가 보이면', '미친 듯이 터치해서', '갈기갈기 찢어버리세요! 💥'];
+  const descFs = Math.max(14, LW * 0.044);
+  ctx.font = `bold ${descFs}px "Malgun Gothic",sans-serif`;
+  ctx.fillStyle = '#ff6b35';
+  ctx.shadowColor = 'rgba(255,80,0,0.45)'; ctx.shadowBlur = 10;
+  const descTop = LH * 0.47 + offY;
+  for (let i = 0; i < descLines.length; i++) {
+    ctx.fillText(descLines[i], cx, descTop + i * (descFs + 9));
+  }
+  ctx.shadowBlur = 0;
+
+  // 하단 작은 문구
+  const smallFs = Math.max(10, LW * 0.026);
+  ctx.font = `${smallFs}px "Malgun Gothic",sans-serif`;
+  ctx.fillStyle = 'rgba(130,145,130,0.70)';
+  ctx.fillText('제한 시간 안에 목표 횟수를 채우면', cx, LH * 0.73 + offY);
+  ctx.fillText('시험지가 산산조각 납니다', cx, LH * 0.73 + smallFs + 7 + offY);
+
+  // 버튼 (페이드인 50% 이후 표시)
+  if (a > 0.5) {
+    const bw = Math.min(LW * 0.72, 260), bh = Math.max(56, LH * 0.072);
+    btnIntro = {x: cx - bw/2, y: LH * 0.81, w: bw, h: bh};
+    drawBtn(btnIntro, '찢으러 가기 →', '#c0392b', '#8e1a0e', '#ff6b6b');
+  }
+
+  ctx.restore();
+}
+
+// ════════════════════════════════════════
+// 과목 선택 화면 (모바일 2열 그리드)
+// ════════════════════════════════════════
+function drawSelectScreen() {
+  const cx=LW/2, cleared=getCleared();
+  // 타이틀
+  ctx.save();
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  const titleFs=Math.max(20, LW*0.07); // 7vw
+  ctx.font=`bold ${titleFs}px "Malgun Gothic",sans-serif`;
+  ctx.fillStyle='#e8f5e9'; ctx.shadowColor='#a5d6a7'; ctx.shadowBlur=18;
+  ctx.fillText('수능 시험지 뿌시기',cx,LH*0.075); ctx.shadowBlur=0;
+  ctx.font=`${Math.max(11, LW*0.030)}px "Malgun Gothic",sans-serif`;
+  ctx.fillStyle='rgba(170,200,170,0.6)';
+  ctx.fillText('과목을 선택하세요',cx,LH*0.130);
+  // 소리 안내 문구 — 첫 터치 전에만 표시
+  if (!audioReady) {
+    ctx.font=`${Math.max(10, LW*0.026)}px "Malgun Gothic",sans-serif`;
+    ctx.fillStyle='rgba(255,220,100,0.72)';
+    ctx.fillText('🔊 소리를 켜고 플레이하세요',cx,LH*0.158);
+  }
+  ctx.restore();
+  // 카드 그리드 — 2열, 카드 높이 = 너비 × 0.7
+  const cols=2, gapX=10, gapY=8;
+  const cardW=Math.floor((LW*0.90-gapX*(cols-1))/cols);
+  const cardH=Math.max(56, Math.floor(cardW*0.70)); // 최소 56px
+  const gridW=cols*cardW+(cols-1)*gapX;
+  const startX=cx-gridW/2, startY=LH*0.170;
+  levelCardBtns=[];
+  for(let i=0;i<levelData.length;i++){
+    const row=Math.floor(i/cols), col=i%cols;
+    const itemsInRow=Math.min(cols,levelData.length-row*cols);
+    const offsetX=itemsInRow===1?(gridW-cardW)/2:col*(cardW+gapX);
+    const cx2=startX+offsetX, cy2=startY+row*(cardH+gapY);
+    const lv=levelData[i], isCleared=cleared.includes(i), unlocked=isUnlocked(i);
+    levelCardBtns.push({x:cx2,y:cy2,w:cardW,h:cardH,idx:i,unlocked});
+    // 그림자
+    ctx.fillStyle='rgba(0,0,0,0.38)'; roundRect(cx2+2,cy2+2,cardW,cardH,10); ctx.fill();
+    // 배경
+    const cg=ctx.createLinearGradient(cx2,cy2,cx2,cy2+cardH);
+    if(!unlocked){
+      cg.addColorStop(0,'rgba(28,28,40,0.96)'); cg.addColorStop(1,'rgba(18,18,28,0.96)');
+    } else if(isCleared){
+      const [r,g,b]=[parseInt(lv.color.slice(1,3),16),parseInt(lv.color.slice(3,5),16),parseInt(lv.color.slice(5,7),16)];
+      cg.addColorStop(0,`rgba(${Math.min(r+40,180)},${Math.min(g+35,140)},${Math.min(b+20,60)},0.96)`);
+      cg.addColorStop(1,`rgba(${Math.min(r+20,130)},${Math.min(g+20,100)},${Math.min(b+10,40)},0.96)`);
+    } else {
+      const [r,g,b]=[parseInt(lv.color.slice(1,3),16),parseInt(lv.color.slice(3,5),16),parseInt(lv.color.slice(5,7),16)];
+      cg.addColorStop(0,`rgba(${Math.max(r-20,10)},${Math.max(g-20,10)},${Math.max(b-20,10)},0.96)`);
+      cg.addColorStop(1,`rgba(${Math.max(r-30,5)},${Math.max(g-30,5)},${Math.max(b-30,5)},0.96)`);
+    }
+    ctx.fillStyle=cg; roundRect(cx2,cy2,cardW,cardH,10); ctx.fill();
+    // 테두리
+    ctx.strokeStyle=!unlocked?'rgba(70,70,90,0.45)':isCleared?hexAlpha(lv.color,0.85):hexAlpha(lv.color,0.55);
+    ctx.lineWidth=1.6; roundRect(cx2,cy2,cardW,cardH,10); ctx.stroke();
+    // 내용
+    ctx.save(); ctx.textAlign='center'; ctx.textBaseline='middle';
+    if(!unlocked){
+      ctx.font=`${Math.max(18,cardH*0.32)}px sans-serif`; ctx.fillStyle='rgba(100,100,120,0.55)';
+      ctx.fillText('🔒',cx2+cardW/2,cy2+cardH*0.40);
+      ctx.font=`${Math.max(9,cardH*0.15)}px "Malgun Gothic",sans-serif`; ctx.fillStyle='rgba(120,120,140,0.62)';
+      ctx.fillText('이전 과목 클리어 필요',cx2+cardW/2,cy2+cardH*0.78);
+    } else {
+      // 과목 표시 이름 (영역 접미어 추가)
+      const dispName = {'국어':'국어 영역','수학':'수학 영역','영어':'영어 영역','탐구':'탐구 영역'}[lv.subject] || lv.subject;
+      // 교시 번호 (작게, 상단)
+      ctx.font=`${Math.max(9,cardH*0.140)}px "Malgun Gothic",sans-serif`;
+      ctx.fillStyle=isCleared?'rgba(255,228,100,0.70)':hexAlpha(lv.color,0.70);
+      ctx.fillText(lv.period,cx2+cardW/2,cy2+cardH*0.15);
+      // 과목명 (1.5배 크게, 카드 너비 기준으로 overflow 방지)
+      const gfs=Math.min(Math.max(18, LW*0.060), cardW*0.44); // 카드 너비 44% 상한
+      ctx.font=`bold ${gfs}px "Malgun Gothic",sans-serif`;
+      ctx.fillStyle=isCleared?'#ffd700':lv.color==='#003580'?'#99ccff':lv.color==='#8B0000'?'#ffaaaa':'#d0f0d0';
+      if(!isCleared)ctx.fillStyle='#e8e8f8';
+      ctx.fillText(dispName,cx2+cardW/2,cy2+cardH*0.40);
+      // 목표/제한시간 (작게, 하단)
+      ctx.font=`${Math.max(6,cardH*0.089)}px "Malgun Gothic",sans-serif`;
+      ctx.fillStyle=isCleared?'rgba(255,220,120,0.45)':'rgba(160,160,185,0.45)';
+      ctx.fillText(`목표 ${lv.goal}회  ·  ${lv.timeLimit}초`,cx2+cardW/2,cy2+cardH*0.62);
+      if(isCleared){
+        ctx.font=`bold ${Math.max(10,cardH*0.16)}px "Malgun Gothic",sans-serif`;
+        ctx.fillStyle='#ffd700'; ctx.shadowColor='#ffd700'; ctx.shadowBlur=6;
+        ctx.fillText('찢음 ✓',cx2+cardW/2,cy2+cardH*0.84); ctx.shadowBlur=0;
+      }
+    }
+    ctx.restore();
+  }
+}
+
+// ════════════════════════════════════════
+// 게임 시작 안내 ('ready')
+// ════════════════════════════════════════
+function drawReadyOverlay() {
+  const lv=getLv(), cx=LW/2, cy=LH/2;
+  ctx.fillStyle='rgba(0,0,0,0.46)'; ctx.fillRect(0,0,LW,LH);
+  ctx.save(); ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`${Math.max(12, LW*0.030)}px "Malgun Gothic",sans-serif`;
+  ctx.fillStyle='rgba(180,200,210,0.72)'; ctx.fillText(`2026학년도 수능  ·  ${lv.subject} 영역`,cx,cy-64);
+  ctx.font=`bold ${Math.max(18, LW*0.050)}px "Malgun Gothic",sans-serif`;
+  ctx.fillStyle='rgba(255,255,200,0.92)'; ctx.fillText('시험지를 클릭/터치해서 찢어라!',cx,cy-22);
+  ctx.font=`${Math.max(12, LW*0.028)}px "Malgun Gothic",sans-serif`;
+  ctx.fillStyle='rgba(190,210,190,0.72)'; ctx.fillText(`목표 ${lv.goal}번 클릭   ·   제한시간 ${lv.timeLimit}초`,cx,cy+18);
+  const blink=0.78+Math.sin(Date.now()*0.0052)*0.22;
+  ctx.globalAlpha=blink; ctx.font=`bold ${Math.max(14, LW*0.038)}px "Malgun Gothic",sans-serif`;
+  ctx.fillStyle='#ffd700'; ctx.fillText('▶ 시험지를 클릭해서 시작!',cx,cy+60);
+  ctx.restore();
+}
+
+// ════════════════════════════════════════
+// 성공 오버레이
+// ════════════════════════════════════════
+function drawSuccessOverlay() {
+  const ph=successPhase, cx=LW/2, cy=LH/2;
+  const lv=getLv(), isLast=currentLevelIdx===levelData.length-1;
+  ctx.fillStyle=`rgba(0,15,0,${Math.min(0.68,ph*1.5)})`; ctx.fillRect(0,0,LW,LH);
+  if(ph<0.28)return;
+  const a=Math.min(1,(ph-0.28)/0.38);
+  ctx.save(); ctx.globalAlpha=a; ctx.textAlign='center'; ctx.textBaseline='middle';
+  if(isLast){
+    ctx.font=`bold ${Math.max(22, LW*0.060)}px "Malgun Gothic",sans-serif`;
+    ctx.fillStyle='#ffd700'; ctx.shadowColor='#ffec6e'; ctx.shadowBlur=28;
+    ctx.fillText('수능 완전 정복! 🎉',cx,cy-72); ctx.shadowBlur=0;
+    ctx.font=`${Math.max(13, LW*0.030)}px "Malgun Gothic",sans-serif`;
+    ctx.fillStyle='rgba(200,255,200,0.88)'; ctx.fillText('7개 과목 시험지를 모두 찢었다!',cx,cy-26);
+  } else {
+    ctx.font=`bold ${Math.max(22, LW*0.062)}px "Malgun Gothic",sans-serif`;
+    ctx.fillStyle='#ffd700'; ctx.shadowColor='#ffec6e'; ctx.shadowBlur=26;
+    ctx.fillText(`${lv.subject} 시험지 완파!`,cx,cy-62); ctx.shadowBlur=0;
+    ctx.font=`${Math.max(12, LW*0.028)}px "Malgun Gothic",sans-serif`;
+    ctx.fillStyle='rgba(190,255,190,0.85)'; ctx.fillText('시험지를 완전히 찢어버렸다!',cx,cy-16);
+  }
+  if(ph>0.65){
+    const bw=Math.min(LW*0.72,260), bh=Math.max(56,LH*0.072);
+    if(isLast){
+      btnPrimary={x:cx-bw/2,y:cy+30,w:bw,h:bh};
+      drawBtn(btnPrimary,'과목 선택으로','#555570','#3a3a55','#7777aa');
+    } else {
+      btnPrimary={x:cx-bw/2,y:cy+22,w:bw,h:bh};
+      const nextLv=levelData[currentLevelIdx+1];
+      const c=nextLv.color, [r2,g2,b2]=[parseInt(c.slice(1,3),16),parseInt(c.slice(3,5),16),parseInt(c.slice(5,7),16)];
+      drawBtn(btnPrimary,`다음: ${nextLv.subject} →`,`rgba(${Math.min(r2+40,220)},${Math.min(g2+40,180)},${Math.min(b2+40,120)},1)`,c,hexAlpha(c,0.85));
+      const bw2=Math.min(LW*0.55,200), bh2=Math.max(48,LH*0.062);
+      btnSecondary={x:cx-bw2/2,y:cy+22+bh+10,w:bw2,h:bh2};
+      drawBtn(btnSecondary,'과목 선택으로','#444458','#333348','#666688');
+    }
+  }
+  ctx.restore();
+}
+
+// ════════════════════════════════════════
+// 실패 오버레이
+// ════════════════════════════════════════
+function drawFailOverlay() {
+  const ph=failPhase, cx=LW/2, cy=LH/2, lv=getLv();
+  ctx.fillStyle=`rgba(20,0,0,${Math.min(0.7,ph*1.4)})`; ctx.fillRect(0,0,LW,LH);
+  if(ph<0.22)return;
+  const a=Math.min(1,(ph-0.22)/0.35);
+  ctx.save(); ctx.globalAlpha=a; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`bold ${Math.max(22, LW*0.060)}px "Malgun Gothic",sans-serif`;
+  ctx.fillStyle='#e74c3c'; ctx.shadowColor='#800'; ctx.shadowBlur=22;
+  ctx.fillText('다음엔 꼭 찢자...',cx,cy-58); ctx.shadowBlur=0;
+  ctx.font=`${Math.max(12, LW*0.028)}px "Malgun Gothic",sans-serif`;
+  ctx.fillStyle='rgba(210,150,150,0.82)';
+  ctx.fillText(`${taps}번 밖에 못 찢었어... (목표: ${lv.goal}번)`,cx,cy-12);
+  if(ph>0.55){
+    const bw=Math.min(LW*0.56,220), bh=Math.max(56,LH*0.072);
+    btnPrimary={x:cx-bw/2,y:cy+26,w:bw,h:bh};
+    drawBtn(btnPrimary,'다시 도전','#c0392b','#922b21','#ec7063');
+    const bw2=Math.min(LW*0.50,190), bh2=Math.max(48,LH*0.062);
+    btnSecondary={x:cx-bw2/2,y:cy+26+bh+10,w:bw2,h:bh2};
+    drawBtn(btnSecondary,'과목 선택으로','#444458','#333348','#666688');
+  }
+  ctx.restore();
+}
+
+// ════════════════════════════════════════
+// 레벨 리셋 (게임플레이 로직 — 수정 없음)
+// ════════════════════════════════════════
+function resetGame() {
+  const lv=getLv();
+  state='ready'; taps=0; timeLeft=lv.timeLimit; timerAccum=0; lastSecond=lv.timeLimit; timerPulse=0;
+  shakeX=0;shakeY=0;shakeFr=0; stampSlam=0;successPhase=0;failPhase=0;fwTimer=0;
+  cracks=[];particles=[];
+  btnPrimary={x:0,y:0,w:0,h:0}; btnSecondary={x:0,y:0,w:0,h:0};
+  currentFwColors=lv.fwColors;
+}
+
+// ════════════════════════════════════════
+// 터치 처리
+// ════════════════════════════════════════
+function handlePointer(clientX, clientY) {
+  // 모바일 오디오 잠금 해제 — 매 터치마다 확인
+  initAudio();
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+
+  const rect=canvas.getBoundingClientRect();
+  // DPR 스케일 적용 후 논리 픽셀로 좌표 변환
+  const px=(clientX-rect.left)*(LW/rect.width);
+  const py=(clientY-rect.top)*(LH/rect.height);
+
+  if(state==='intro'){
+    if(hitBtn(px,py,btnIntro)){
+      initAudio();                               // iOS AudioContext resume
+      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+      stopBGM();                                 // BGM 페이드아웃
+      state='select';
+    }
+    return;
+  }
+  if(state==='select'){
+    for(const card of levelCardBtns){
+      if(!card.unlocked)continue;
+      if(hitBtn(px,py,card)){currentLevelIdx=card.idx;resetGame();return;}
+    }
+    return;
+  }
+  if(state==='success'){
+    if(hitBtn(px,py,btnPrimary)){
+      if(currentLevelIdx===levelData.length-1)state='select';
+      else{currentLevelIdx++;resetGame();}
+      return;
+    }
+    if(hitBtn(px,py,btnSecondary)){state='select';return;}
+    return;
+  }
+  if(state==='fail'){
+    if(hitBtn(px,py,btnPrimary)){resetGame();return;}
+    if(hitBtn(px,py,btnSecondary)){state='select';return;}
+    return;
+  }
+  // ready / playing
+  const paper=getPaper();
+  if(px<paper.x||px>paper.x+paper.w||py<paper.y||py>paper.y+paper.h)return;
+  if(state==='ready')state='playing';
+  taps++; playTear(); addCrack(px,py,paper);
+  if(particles.length < particleLimit){
+    const n=2+Math.floor(Math.random()*2);
+    for(let i=0;i<n;i++)particles.push(new PaperBit(px,py,false));
+  }
+  const intensity=2.5+Math.random()*3.5;
+  shakeX=(Math.random()-0.5)*intensity*2; shakeY=(Math.random()-0.5)*intensity*2; shakeFr=9;
+  if(taps>=getLv().goal&&state==='playing'){
+    markCleared(currentLevelIdx); state='success'; playBigTear(); spawnSuccessExplosion();
+  }
+}
+
+// 멀티터치 + 스크롤 방지
+canvas.addEventListener('click', e => handlePointer(e.clientX, e.clientY));
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  for(const t of e.changedTouches) handlePointer(t.clientX, t.clientY);
+}, {passive: false});
+canvas.addEventListener('touchmove', e => { e.preventDefault(); }, {passive: false});
+
+// ════════════════════════════════════════
+// 게임 루프
+// ════════════════════════════════════════
+function gameLoop(timestamp) {
+  const dt=Math.min(timestamp-lastTime,50); lastTime=timestamp;
+
+  // 성능 자동 조절: 프레임 타임 20ms 초과 시 파티클 절반으로
+  _perfFrameTime = _perfFrameTime * 0.9 + dt * 0.1;
+  particleLimit = _perfFrameTime > 20 ? 30 : 60;
+
+  drawBackground();
+  if(state==='intro'){drawIntroScreen(dt);requestAnimationFrame(gameLoop);return;}
+  if(state==='select'){drawSelectScreen();requestAnimationFrame(gameLoop);return;}
+  const paper=getPaper(), progress=Math.min(taps/getLv().goal,1);
+  if(shakeFr>0){shakeFr--;shakeX*=0.68;shakeY*=0.68;}else{shakeX=0;shakeY=0;}
+  if(state==='playing'){
+    timerAccum+=dt;
+    if(timerAccum>=1000){
+      timeLeft-=Math.floor(timerAccum/1000); timerAccum=timerAccum%1000;
+      const sec=Math.ceil(timeLeft);
+      if(sec<lastSecond){lastSecond=sec;if(timeLeft<=10)timerPulse=1.0;}
+      if(timeLeft<=0){timeLeft=0;state='fail';playFailSound();stampSlam=0;}
+    }
+    timerPulse=Math.max(0,timerPulse-dt*0.0028);
+  }
+  if(state==='fail'){stampSlam=Math.min(1,stampSlam+dt*0.006);failPhase=Math.min(1,failPhase+dt*0.003);}
+  if(state==='success'){
+    successPhase=Math.min(1,successPhase+dt*0.0022); fwTimer+=dt;
+    if(fwTimer>=360){spawnFirework();fwTimer=fwTimer%360;}
+  }
+  if(state!=='success'||successPhase<0.45){
+    const alpha=state==='success'?Math.max(0,1-successPhase*2.8):1;
+    ctx.save();ctx.globalAlpha=alpha;drawPaper(paper,progress);drawCracks(paper);ctx.restore();
+  }
+  for(let i=particles.length-1;i>=0;i--){particles[i].update();particles[i].draw();if(particles[i].dead)particles.splice(i,1);}
+  if(state==='playing'||state==='ready'){drawTimer();drawProgressBar(progress);}
+  if(state==='playing'&&timeLeft<=10){
+    const pulse=(Math.sin(Date.now()*0.013)*0.5+0.5)*0.07;
+    ctx.fillStyle=`rgba(120,0,0,${pulse})`;ctx.fillRect(0,0,LW,LH);
+  }
+  if(state==='ready')drawReadyOverlay();
+  if(state==='success')drawSuccessOverlay();
+  if(state==='fail')drawFailOverlay();
+  requestAnimationFrame(gameLoop);
+}
+
+startBGM(); // 소개 화면 BGM 자동 시작
+requestAnimationFrame(t=>{lastTime=t;gameLoop(t);});
+</script>
+</body>
+</html>
